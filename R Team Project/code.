@@ -1,0 +1,203 @@
+library(tidyverse)                                  
+library(arules)                                     
+library(shiny)                                      
+library(dplyr)
+library(DT)
+
+customer_clustering <- function(data, num_clusters) {
+  # Perform k-means clustering
+  kmeans_result <- kmeans(data, centers = num_clusters)
+  
+  # Add cluster assignments to the original data
+  data_with_clusters <- cbind(data, cluster = kmeans_result$cluster)
+  
+  return(data_with_clusters)
+}
+
+ui <- shinyUI(fluidPage(
+  titlePanel("Data Science Project"),
+  
+  # Define the tabs
+  tabsetPanel(
+    tabPanel("DATA", 
+             DTOutput("cleaned_data_table")
+    ),
+    
+    tabPanel("K-means",
+             selectInput("clusters", "Number of Clusters:", choices = c(2, 3, 4)),
+             tableOutput("kmeans_table")
+    ),
+    
+    tabPanel("Association Rules",
+             DTOutput("association_rules_table")
+    ),
+    
+    tabPanel("Data Visualization",
+             fluidRow(
+               column(6, plotOutput("pie_chart")),
+               column(6, plotOutput("age_total_barplot"))),
+             fluidRow(
+               column(6, plotOutput("city_spending_plot")),
+               column(6, plotOutput("total_spending_hist")))
+    )
+  ),
+  
+  sidebarLayout(position = "left",
+                sidebarPanel(
+                  fileInput("file", "Choose CSV File",
+                            accept = c(".csv")),
+                  
+                  sliderInput("support", "Minimum Apriori Support:", 
+                              min = 0.001, max = 1, value = 0.2, step = 0.01),
+                  
+                  sliderInput("confidence", "Minimum Apriori Confidence:", 
+                              min = 0.001, max = 1, value = 0.2, step = 0.01),
+                  
+                ),
+                
+                mainPanel()
+  )
+))
+
+server <- function(input, output, session) {
+  
+  # Reactive expression to read and process the selected CSV file
+  DATA <- reactive({
+    req(input$file)  # Ensure that a file is selected
+    
+    # Read the CSV file
+    df <- read.csv(input$file$datapath)
+    
+    # Remove duplicate rows
+    df <- df[!duplicated(df), ]
+    
+    # Remove rows with NA values
+    df <- na.omit(df)
+    
+    # Reset row names to ensure consecutive numbering
+    row.names(df) <- NULL
+    
+    return(df)
+  })
+  
+  
+  AprioriRules <- function(min_support, min_confidence){
+    item <- strsplit(DATA()$items, ",")
+    items <- as(item, "transactions")
+    
+    apriori <- apriori(item, parameter = list(supp = min_support, conf = min_confidence, minlen = 2))
+    
+    return(apriori)
+  }
+  
+  # Reactive expression to perform k-means clustering
+  kmeans_result <- reactive({
+    req(DATA())  # Ensure that data is available
+    
+    Customer_Total_Spending <- DATA() %>%
+      group_by(customer, age) %>%
+      summarise(total_Spending = sum(total))
+    Kmean_Clustering <- kmeans(Customer_Total_Spending[c("age", "total_Spending")], centers = input$clusters)
+    
+    kmeansTable <- data.frame(customer_name = Customer_Total_Spending$customer, 
+                              age = Customer_Total_Spending$age, 
+                              total = Customer_Total_Spending$total_Spending , 
+                              clusternumber = Kmean_Clustering$cluster)
+    return(kmeansTable)
+  })
+  
+  # Reactive expression to generate association rules
+  apriori_result <- reactive({
+    req(DATA())  # Ensure that data is available
+    
+    # Example data for demonstration
+    transactions <- as(DATA(), "transactions")
+    
+    # Generate association rules
+    min_support <- input$support
+    min_confidence <- input$confidence
+    rules <- (AprioriRules(min_support, min_confidence))
+    
+    return(rules)
+  })
+  
+  # Display the cleaned data as a table
+  output$cleaned_data_table <- renderDT({
+    DATA()
+  })
+  
+  # Display the association rules as a table
+  output$association_rules_table <- renderDT({
+    req(apriori_result())  # Ensure that association rules are available
+    DATAFRAME(apriori_result())
+  })
+  
+  # Display the K-means clustering results in a table
+  output$kmeans_table <- renderTable({
+    req(kmeans_result())  # Ensure that clustering results are available
+    
+    kmeans_result()
+    
+  })
+  
+  # Data visualization plots
+  output$pie_chart <- renderPlot({
+    req(DATA())  # Ensure that data is available
+    
+    # Pie chart for payment type comparison
+    x <- table(DATA()$paymentType)
+    percentage <- round(100 * x / sum(x), 2)
+    pie(x, labels = paste0(percentage, "%"), main = "Compare between cash and credit", 
+        col = c("darkgreen", "lightgreen"))
+    legend("bottomright", legend = c("cash", "credit"), fill = c("darkgreen", "lightgreen"))
+  })
+  
+  output$age_total_barplot <- renderPlot({
+    req(DATA())  # Ensure that data is available
+    
+    # Barplot for comparison of total spending by age
+    age_total <- DATA() %>%
+      group_by(age) %>%
+      summarise(total = sum(total))
+    
+    barplot(age_total$total, 
+            names.arg = age_total$age, 
+            col = "purple", 
+            main = "Comparison of Total by Age",
+            xlab = "Age",
+            ylim = c(0, max(age_total$total) * 1.2),  
+            las = 2)
+  })
+  
+  output$city_spending_plot <- renderPlot({
+    req(DATA())  # Ensure that data is available
+    
+    # Scatter plot for total spending by city
+    city_spending <- DATA() %>%
+      group_by(city) %>%
+      summarise(total = sum(total)) %>%
+      arrange(desc(total))
+    
+    plot(1:nrow(city_spending), city_spending$total, 
+         type = "p", col = "blue", pch = 16,
+         main = "Total Spending by City", 
+         xlab = "City", ylab = "Total Spending",
+         xlim = c(1, nrow(city_spending)),
+         xaxt = "n")
+    axis(side = 1, at = 1:nrow(city_spending), labels = city_spending$city, las = 2)
+  })
+  
+  output$total_spending_hist <- renderPlot({
+    req(DATA())  # Ensure that data is available
+    
+    # Histogram of total spending
+    hist(DATA()$total, 
+         col = "blue",
+         main = "Distribution of Total Spending",
+         xlab = "Total Spending",
+         ylab = "Frequency")
+  })
+  
+}
+
+shinyApp(ui = ui, server = server) 
